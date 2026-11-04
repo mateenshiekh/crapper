@@ -43,7 +43,9 @@ def render_edn(entries: list[Entry]) -> str:
             f":namespace {_edn_string(entry.namespace)}, "
             f":complexity {entry.complexity}, "
             f":coverage {_edn_value(entry.coverage)}, "
-            f":crap {_edn_value(entry.crap)}"
+            f":crap {_edn_value(entry.crap)}, "
+            f":line {entry.line}, "
+            f":end-line {entry.end_line}"
             "}"
         )
     body = "\n".join(rows)

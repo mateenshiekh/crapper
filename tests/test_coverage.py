@@ -158,3 +158,23 @@ def test_load_bundle_merges_each_report(tmp_path):
     assert bundle.percent_for(function(start_line=3, end_line=4)) == 50.0
     assert bundle.go_profile is not None
     assert bundle.jacoco is not None
+
+
+def test_two_lcov_reports_for_one_file_are_merged_not_replaced(tmp_path):
+    from crapper.coverage import load_bundle
+
+    root_run = tmp_path / "target" / "coverage" / "dart" / "lcov.info"
+    pkg_run = tmp_path / "target" / "coverage" / "dart" / "packages__engine" / "lcov.info"
+    root_run.parent.mkdir(parents=True)
+    pkg_run.parent.mkdir(parents=True)
+    root_run.write_text(
+        "SF:packages/engine/lib/a.dart\nDA:3,1\nDA:4,0\nBRDA:4,0,0,-\nend_of_record\n",
+        encoding="utf-8",
+    )
+    pkg_run.write_text(
+        "SF:packages/engine/lib/a.dart\nDA:3,0\nDA:4,2\nBRDA:4,0,0,1\nend_of_record\n",
+        encoding="utf-8",
+    )
+    record = load_bundle(tmp_path).lcov["packages/engine/lib/a.dart"]
+    assert record[3] == (1, 1) and record[4] == (1, 1)
+    assert record.branches[4] == (1, 1)

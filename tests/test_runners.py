@@ -701,3 +701,24 @@ def test_pure_dart_coverage_activates_the_coverage_package(tmp_path, monkeypatch
     monkeypatch.setattr("crapper.runners.run_shell", lambda command, cwd: 1)
     run_coverage(tmp_path, [app], None)
     assert "coverage package is unavailable" in capsys.readouterr().err
+
+
+def test_root_flutter_run_widens_coverage_to_the_sibling_packages(tmp_path):
+    from crapper.runners import dart_package_names
+
+    _write(tmp_path, "pubspec.yaml", _FLUTTER_PUBSPEC)
+    _write(tmp_path, "packages/engine/pubspec.yaml", "name: engine\n")
+    _write(tmp_path, "packages/ui/pubspec.yaml", "name: ui\n")
+    _write(tmp_path, "build/ignored/pubspec.yaml", "name: ignored\n")
+    _write(tmp_path, "ios/.symlinks/plugins/x/pubspec.yaml", "name: plugin\n")
+    assert dart_package_names(tmp_path) == ["shop", "engine", "ui"]
+    report = tmp_path / "target" / "coverage" / "dart" / "lcov.info"
+    assert dart_command(tmp_path, report, coverage_packages=["shop", "engine", "ui"]) == [
+        "flutter",
+        "test",
+        "--coverage",
+        "--branch-coverage",
+        "--coverage-package=(shop|engine|ui)",
+        f"--coverage-path={report}",
+    ]
+    assert "--coverage-package" not in " ".join(dart_command(tmp_path, report))

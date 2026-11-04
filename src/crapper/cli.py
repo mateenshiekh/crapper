@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import subprocess
 import sys
 from dataclasses import dataclass, field
@@ -61,6 +62,10 @@ Options:
   --coverage-command <cmd>      Run this command instead of the per-language
                                 coverage tools, then read the reports it wrote.
   --threshold <number>          Exit 2 when the worst CRAP score is above this.
+  --since <ref>                 Report, and apply --threshold to, only the
+                                functions whose lines changed since <ref>
+                                (git merge-base with HEAD, against the working
+                                tree). The snapshot still holds every function.
 
 Arguments:
   path              File or directory to analyze. Test paths are included when
@@ -105,6 +110,7 @@ class Options:
     coverage_command: str | None = None
     threshold: float | None = None
     changed: bool = False
+    since: str | None = None
 
 
 def _take(args: list[str], index: int, option: str) -> str:
@@ -153,6 +159,10 @@ def parse_args(argv: list[str] | None = None) -> Options:
             if arg == "--changed":
                 options.changed = True
                 index += 1
+                continue
+            if arg == "--since":
+                options.since = _take(args, index, arg)
+                index += 2
                 continue
             if arg.startswith("-"):
                 raise ValueError(f"Unknown option: {arg}")
@@ -222,6 +232,66 @@ def _changed_files(root: Path) -> list[Path]:
         if path.is_file() and path.is_relative_to(limit):
             found.append(path)
     return found
+
+
+_HUNK = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@", re.MULTILINE)
+
+
+def changed_lines_since(root: Path, ref: str) -> dict[str, set[int]]:
+    """Working-tree line numbers added or modified since `ref`, keyed by path.
+
+    The comparison base is `git merge-base ref HEAD`, so a trunk that moved on
+    after the branch was cut does not count as this branch's change. Paths are
+    relative to the repository's top level, as `git diff` prints them.
+    """
+
+    base_result = _git(root, ["merge-base", ref, "HEAD"])
+    base = base_result.stdout.strip() if base_result.returncode == 0 else ref
+    diff = _git(root, ["diff", "-U0", "--no-color", "--no-renames", base, "--"])
+    if diff.returncode != 0:
+        raise GitError(diff.returncode, diff.stderr.strip() or "git diff failed")
+    changed: dict[str, set[int]] = {}
+    current: str | None = None
+    for line in diff.stdout.splitlines():
+        if line.startswith("+++ "):
+            name = line[4:]
+            current = None if name == "/dev/null" else name.removeprefix("b/")
+            continue
+        match = _HUNK.match(line)
+        if match and current is not None:
+            start = int(match.group(1))
+            count = int(match.group(2)) if match.group(2) is not None else 1
+            if count:
+                changed.setdefault(current, set()).update(range(start, start + count))
+    return changed
+
+
+def _repo_relative(root: Path, path: str) -> str:
+    """`entry.path` is root-relative; git paths are top-level-relative."""
+
+    top_result = _git(root, ["rev-parse", "--show-toplevel"])
+    if top_result.returncode != 0:
+        return path
+    top = Path(top_result.stdout.strip()).resolve()
+    try:
+        prefix = root.resolve().relative_to(top).as_posix()
+    except ValueError:
+        return path
+    return path if prefix in {"", "."} else f"{prefix}/{path}"
+
+
+def entries_since(entries, root: Path, ref: str):
+    """The entries whose line span overlaps a line changed since `ref`."""
+
+    changed = changed_lines_since(root, ref)
+    kept = []
+    for entry in entries:
+        lines = changed.get(_repo_relative(root, entry.path))
+        if not lines or not entry.end_line:
+            continue
+        if any(entry.line <= line <= entry.end_line for line in lines):
+            kept.append(entry)
+    return kept
 
 
 def _positionals(root: Path, args: list[str]) -> tuple[list[Path], list[str]]:
@@ -326,9 +396,20 @@ def run(argv: list[str] | None = None) -> int:
 
     entries = analyze_files(files, root, _coverage_bundle(options, root, files))
     metrics = write_metrics(entries, root)
-    print(format_report(entries), end="", flush=True)
+    reported = entries
+    if options.since is not None:
+        try:
+            reported = entries_since(entries, root, options.since)
+        except GitError as exc:
+            print(str(exc), file=sys.stderr)
+            return exc.code
+        print(
+            f"Since {options.since}: {len(reported)} of {len(entries)} functions changed.",
+            file=sys.stderr,
+        )
+    print(format_report(reported), end="", flush=True)
     print(f"Wrote {metrics}", file=sys.stderr)
-    return _threshold_status(options, entries)
+    return _threshold_status(options, reported)
 
 
 def main(argv: list[str] | None = None) -> None:

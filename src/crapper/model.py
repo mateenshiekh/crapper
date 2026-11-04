@@ -30,3 +30,7 @@ class Entry:
     crap: float | None
     path: str
     language: str
+    # Line span of the function, so a report can be limited to the functions a
+    # change touched (`--since`). 0 when a caller built the entry without one.
+    line: int = 0
+    end_line: int = 0

@@ -428,18 +428,56 @@ def uses_flutter(package: Path) -> bool:
     return _FLUTTER_SDK.search(text) is not None
 
 
-def dart_command(package: Path, report: Path, branches: bool = True) -> list[str]:
+_PUBSPEC_NAME = re.compile(r"^name:\s*([A-Za-z0-9_]+)", re.MULTILINE)
+_DART_SKIPPED = {".dart_tool", ".symlinks", "build", "ios", "android", "node_modules", ".git"}
+
+
+def dart_package_names(root: Path) -> list[str]:
+    """Names of every pubspec under `root`, the root's own first.
+
+    `flutter test --coverage` records only the package it runs in unless
+    `--coverage-package` widens the regexp, so an app whose tests exercise a
+    path-dependency package under `packages/` would otherwise score that
+    package's functions at 0% from the root run.
+    """
+
+    names: list[str] = []
+    for pubspec in sorted(root.rglob("pubspec.yaml")):
+        relative = pubspec.relative_to(root).parts
+        if any(part in _DART_SKIPPED for part in relative[:-1]):
+            continue
+        match = _PUBSPEC_NAME.search(pubspec.read_text(encoding="utf-8", errors="replace"))
+        if match and match.group(1) not in names:
+            if pubspec.parent == root:
+                names.insert(0, match.group(1))
+            else:
+                names.append(match.group(1))
+    return names
+
+
+def dart_command(
+    package: Path,
+    report: Path,
+    branches: bool = True,
+    coverage_packages: list[str] | None = None,
+) -> list[str]:
     """Argument vector that writes LCOV to `report`.
 
     A Flutter package runs `flutter test`; any other package runs the coverage
     package's `test_with_coverage`, which wraps `dart test`. Both record BRDA
-    branch records, which the loader prefers over line hits.
+    branch records, which the loader prefers over line hits. `coverage_packages`
+    widens Flutter's `--coverage-package` regexp so tests in this package also
+    record the sibling packages they execute; their `SF:` paths come out
+    relative to this package, which is the project root in the one place the
+    runner asks for it.
     """
 
     if uses_flutter(package):
         command = ["flutter", "test", "--coverage"]
         if branches:
             command.append("--branch-coverage")
+        if coverage_packages:
+            command.append(f"--coverage-package=({'|'.join(coverage_packages)})")
         command.append(f"--coverage-path={report}")
         return command
     command = [*_TEST_WITH_COVERAGE]
@@ -484,11 +522,14 @@ def rebase_lcov(report: Path, package: Path, root: Path) -> None:
     report.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-def _run_dart_tests(package: Path, report: Path) -> int:
-    code = run_shell(dart_command(package, report), package)
+def _run_dart_tests(package: Path, report: Path, coverage_packages=None) -> int:
+    code = run_shell(dart_command(package, report, coverage_packages=coverage_packages), package)
     if code != 0 and not report.is_file():
         _warn("No report was written; retrying without --branch-coverage.")
-        code = run_shell(dart_command(package, report, branches=False), package)
+        code = run_shell(
+            dart_command(package, report, branches=False, coverage_packages=coverage_packages),
+            package,
+        )
     return code
 
 
@@ -511,7 +552,11 @@ def _cover_dart(root: Path, files: list[Path]) -> None:
         if stale.is_file():
             _warn(f"Removing {stale}; the Dart report is regenerated under target/coverage/dart.")
             stale.unlink()
-        code = _run_dart_tests(package, report)
+        # Only the root run widens the package regexp: its sibling paths come
+        # out root-relative already. A nested package's run stays scoped to
+        # itself, since its `SF:` paths for a sibling would need a second rebase.
+        widen = dart_package_names(root) if package == root.resolve() else None
+        code = _run_dart_tests(package, report, widen if widen and len(widen) > 1 else None)
         if code != 0:
             _warn(f"Dart tests exited {code} in {package}. Coverage that was written is still read.")
         rebase_lcov(report, package, root)

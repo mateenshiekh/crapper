@@ -510,10 +510,33 @@ def _merge_texts(paths: list[Path]) -> list[str]:
     return texts
 
 
+def merge_file_coverage(into: FileCoverage, other: FileCoverage) -> FileCoverage:
+    """Union of two records for one file: a line or branch hit in either counts.
+
+    Two reports can describe the same file -- a Flutter app's root run widened
+    with `--coverage-package`, and the package's own run. Replacing one with
+    the other would drop whichever tests ran first.
+    """
+
+    for line, (covered, total) in other.items():
+        have = into.get(line)
+        into[line] = (max(have[0], covered), max(have[1], total)) if have else (covered, total)
+    for line, (covered, total) in other.branches.items():
+        have = into.branches.get(line)
+        into.branches[line] = (
+            (max(have[0], covered), max(have[1], total)) if have else (covered, total)
+        )
+    return into
+
+
 def _merge_lcov(root: Path) -> dict[str, dict[int, tuple[int, int]]]:
-    merged: dict[str, dict[int, tuple[int, int]]] = {}
+    merged: dict[str, FileCoverage] = {}
     for text in _merge_texts(_lcov_paths(root)):
-        merged.update(parse_lcov(text))
+        for path, record in parse_lcov(text).items():
+            if path in merged:
+                merge_file_coverage(merged[path], record)
+            else:
+                merged[path] = record
     return merged
 
 

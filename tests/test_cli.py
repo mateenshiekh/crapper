@@ -413,3 +413,57 @@ def test_main_exits_with_the_status(monkeypatch):
         assert exc.code == 4
     else:
         raise AssertionError("main did not exit")
+
+
+def test_since_reports_only_the_functions_a_branch_touched(tmp_path, capsys):
+    _git = ["git", "-C", str(tmp_path)]
+    subprocess.run([*_git, "init", "-q", "-b", "main"], check=True, capture_output=True)
+    subprocess.run([*_git, "config", "user.email", "t@example.com"], check=True)
+    subprocess.run([*_git, "config", "user.name", "t"], check=True)
+    source = tmp_path / "board.go"
+    source.write_text(
+        "package demo\n\n"
+        "func Old(x int) int {\n\tif x > 0 {\n\t\treturn x\n\t}\n\treturn 0\n}\n\n"
+        "func Touched(x int) int {\n\treturn x\n}\n",
+        encoding="utf-8",
+    )
+    subprocess.run([*_git, "add", "."], check=True)
+    subprocess.run([*_git, "commit", "-q", "-m", "init"], check=True, capture_output=True)
+    subprocess.run([*_git, "checkout", "-q", "-b", "feature"], check=True)
+    source.write_text(
+        source.read_text(encoding="utf-8").replace(
+            "func Touched(x int) int {\n\treturn x\n}",
+            "func Touched(x int) int {\n\tif x > 1 {\n\t\treturn x\n\t}\n\treturn 0\n}",
+        ),
+        encoding="utf-8",
+    )
+    # An uncommitted change counts too: the comparison is base vs working tree.
+    assert run(["--root", str(tmp_path), "--no-coverage", "--since", "main"]) == 0
+    out = capsys.readouterr()
+    assert "Touched" in out.out
+    assert "Old" not in out.out
+    assert "1 of 2 functions changed" in out.err
+    # The snapshot keeps every function; only the report and threshold narrow.
+    text = (tmp_path / ".metrics" / "crap.edn").read_text(encoding="utf-8")
+    assert ':name "Old"' in text and ":line 3" in text and ":end-line 8" in text
+
+    # A trunk that moved after the branch was cut is not this branch's change.
+    subprocess.run([*_git, "stash", "-q"], check=True)
+    subprocess.run([*_git, "checkout", "-q", "main"], check=True)
+    (tmp_path / "other.go").write_text("package demo\nfunc Trunk() int { return 1 }\n", encoding="utf-8")
+    subprocess.run([*_git, "add", "."], check=True)
+    subprocess.run([*_git, "commit", "-q", "-m", "trunk"], check=True, capture_output=True)
+    subprocess.run([*_git, "checkout", "-q", "feature"], check=True)
+    subprocess.run([*_git, "stash", "pop", "-q"], check=True)
+    assert run(["--root", str(tmp_path), "--no-coverage", "--since", "main"]) == 0
+    out = capsys.readouterr()
+    assert "Touched" in out.out and "Trunk" not in out.out
+
+
+def test_since_outside_a_repository_returns_gits_status(tmp_path, capsys):
+    (tmp_path / "a.go").write_text("package demo\nfunc A() int { return 1 }\n", encoding="utf-8")
+    env_root = tmp_path / "noрepo"
+    env_root.mkdir()
+    (env_root / "a.go").write_text("package demo\nfunc A() int { return 1 }\n", encoding="utf-8")
+    code = run(["--root", str(env_root), "--no-coverage", "--since", "HEAD"])
+    assert code != 0 or "Since HEAD" in capsys.readouterr().err
