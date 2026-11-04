@@ -20,6 +20,7 @@ EXTENSIONS = {
     ".cjs": "typescript",
     ".rs": "rust",
     ".py": "python",
+    ".dart": "dart",
 }
 
 SKIP_DIRS = {
@@ -40,11 +41,26 @@ SKIP_DIRS = {
     "testdata",
     "__pycache__",
     ".clj-kondo",
+    ".dart_tool",
 }
 
-TEST_DIRS = {"test", "tests", "spec", "specs", "__tests__"}
+TEST_DIRS = {"test", "tests", "spec", "specs", "__tests__", "integration_test", "test_driver"}
 
 GO_TEST_SUFFIX = "_test.go"
+DART_TEST_SUFFIX = "_test.dart"
+# build_runner, freezed, auto_route, injectable, mockito, protobuf, flutter_gen.
+DART_GENERATED_SUFFIXES = (
+    ".g.dart",
+    ".freezed.dart",
+    ".gr.dart",
+    ".config.dart",
+    ".mocks.dart",
+    ".pb.dart",
+    ".pbenum.dart",
+    ".pbjson.dart",
+    ".pbserver.dart",
+    ".gen.dart",
+)
 CLOJURE_TEST_SUFFIXES = ("_test.clj", "_test.cljc", "_test.cljs", "_test.bb")
 JS_TEST_SUFFIXES = (
     ".test.ts",
@@ -71,6 +87,8 @@ def language_of(path: str | Path) -> str | None:
     name = file_path.name
     if name.endswith(".d.ts"):
         return None
+    if name.endswith(DART_GENERATED_SUFFIXES):
+        return None
     return EXTENSIONS.get(file_path.suffix)
 
 
@@ -78,6 +96,8 @@ def is_test_file(path: str | Path) -> bool:
     file_path = Path(path)
     name = file_path.name
     if name.endswith(GO_TEST_SUFFIX):
+        return True
+    if name.endswith(DART_TEST_SUFFIX):
         return True
     if name.endswith(CLOJURE_TEST_SUFFIXES):
         return True

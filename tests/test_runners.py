@@ -19,15 +19,19 @@ from crapper.runners import (
     _restore_manifests,
     _rust_kind,
     _vitest_version,
+    dart_command,
+    dart_packages,
     python_coverage_commands,
     python_roots,
     python_sources,
+    rebase_lcov,
     run_coverage,
     run_shell,
     rust_coverage_command,
     rust_modules,
     typescript_command,
     typescript_packages,
+    uses_flutter,
     uses_pytest,
 )
 
@@ -263,6 +267,9 @@ def test_coverage_commands_are_issued_per_language(tmp_path, monkeypatch):
     _write(tmp_path, "src/app.py", "def run():\n    return 1\n")
     _write(tmp_path, "Cargo.toml", '[package]\nname = "demo"\nversion = "0.1.0"\n')
     _write(tmp_path, "src/lib.rs", "pub fn open() {}\n")
+    _write(tmp_path, "pubspec.yaml", "name: demo\ndependencies:\n  flutter:\n    sdk: flutter\n")
+    _write(tmp_path, "lib/app.dart", "int view() => 1;\n")
+    _write(tmp_path, "test/app_test.dart", "void main() {}\n")
     files = [
         tmp_path / "src/demo/core.clj",
         tmp_path / "src/Board.java",
@@ -270,6 +277,7 @@ def test_coverage_commands_are_issued_per_language(tmp_path, monkeypatch):
         tmp_path / "src/ui.ts",
         tmp_path / "src/app.py",
         tmp_path / "src/lib.rs",
+        tmp_path / "lib/app.dart",
     ]
     run_coverage(tmp_path, files, None)
     text = "\n".join(_as_text(command) for command in commands)
@@ -280,6 +288,7 @@ def test_coverage_commands_are_issued_per_language(tmp_path, monkeypatch):
     assert "vitest" in text
     assert "coverage run" in text
     assert "cargo llvm-cov" in text
+    assert "flutter test --coverage --branch-coverage" in text
     run_coverage(tmp_path, files, "echo custom")
     assert commands[-1] == "echo custom"
 
@@ -291,6 +300,7 @@ def test_missing_build_files_skip_that_language(tmp_path, monkeypatch):
         _write(tmp_path, "main.go", "package main\n"),
         _write(tmp_path, "src/app.ts", "export const n = 1\n"),
         _write(tmp_path, "src/lib.rs", "pub fn open() {}\n"),
+        _write(tmp_path, "lib/app.dart", "int view() => 1;\n"),
     ]
     run_coverage(tmp_path, files, None)
 
@@ -547,3 +557,147 @@ def test_vitest_install_restores_manifests_when_install_changes_them(tmp_path, m
 def test_python_sources_name_a_top_level_module_without_its_suffix(tmp_path):
     module = tmp_path / "carddav.py"
     assert python_sources(tmp_path, [module, tmp_path / "test_carddav.py"]) == "carddav"
+
+
+_FLUTTER_PUBSPEC = "name: shop\ndependencies:\n  flutter:\n    sdk: flutter\n"
+_DART_PUBSPEC = "name: shop\ndependencies:\n  args: ^2.0.0\n"
+
+
+def test_flutter_package_runs_flutter_test_with_branch_coverage(tmp_path):
+    _write(tmp_path, "pubspec.yaml", _FLUTTER_PUBSPEC)
+    report = tmp_path / "target" / "coverage" / "dart" / "lcov.info"
+    assert uses_flutter(tmp_path)
+    assert dart_command(tmp_path, report) == [
+        "flutter",
+        "test",
+        "--coverage",
+        "--branch-coverage",
+        f"--coverage-path={report}",
+    ]
+    assert "--branch-coverage" not in dart_command(tmp_path, report, branches=False)
+
+
+def test_pure_dart_package_runs_test_with_coverage(tmp_path):
+    _write(tmp_path, "pubspec.yaml", _DART_PUBSPEC)
+    report = tmp_path / "target" / "coverage" / "dart" / "lcov.info"
+    assert not uses_flutter(tmp_path)
+    assert not uses_flutter(tmp_path / "missing")
+    assert dart_command(tmp_path, report) == [
+        "dart",
+        "pub",
+        "global",
+        "run",
+        "coverage:test_with_coverage",
+        "--branch-coverage",
+        f"--out={report.parent}",
+    ]
+    assert "--branch-coverage" not in dart_command(tmp_path, report, branches=False)
+
+
+def test_dart_package_is_the_nearest_pubspec(tmp_path):
+    _write(tmp_path, "pubspec.yaml", _FLUTTER_PUBSPEC)
+    _write(tmp_path, "packages/ui/pubspec.yaml", "name: ui\n")
+    app = _write(tmp_path, "lib/app.dart", "int view() => 1;\n")
+    button = _write(tmp_path, "packages/ui/lib/button.dart", "int press() => 1;\n")
+    assert dart_packages(tmp_path, [app, button]) == [
+        tmp_path.resolve(),
+        (tmp_path / "packages" / "ui").resolve(),
+    ]
+
+
+def test_rebase_lcov_prefixes_a_nested_packages_relative_paths(tmp_path):
+    report = _write(
+        tmp_path,
+        "target/coverage/dart/packages__ui/lcov.info",
+        "SF:lib/button.dart\nDA:1,1\nend_of_record\nSF:/abs/other.dart\nDA:1,0\nend_of_record\n",
+    )
+    rebase_lcov(report, tmp_path / "packages" / "ui", tmp_path)
+    assert report.read_text(encoding="utf-8") == (
+        "SF:packages/ui/lib/button.dart\nDA:1,1\nend_of_record\n"
+        "SF:/abs/other.dart\nDA:1,0\nend_of_record\n"
+    )
+    root_report = _write(tmp_path, "target/coverage/dart/lcov.info", "SF:lib/app.dart\nend_of_record\n")
+    rebase_lcov(root_report, tmp_path, tmp_path)
+    assert root_report.read_text(encoding="utf-8") == "SF:lib/app.dart\nend_of_record\n"
+    rebase_lcov(tmp_path / "missing.info", tmp_path, tmp_path)
+    outside = _write(tmp_path, "elsewhere/lcov.info", "SF:lib/x.dart\n")
+    rebase_lcov(outside, Path("/somewhere/else"), tmp_path)
+    assert outside.read_text(encoding="utf-8") == "SF:lib/x.dart\n"
+
+
+def test_dart_package_without_tests_is_skipped(tmp_path, monkeypatch, capsys):
+    commands = []
+    monkeypatch.setattr("crapper.runners.run_shell", lambda command, cwd: commands.append(command) or 0)
+    _write(tmp_path, "pubspec.yaml", _FLUTTER_PUBSPEC)
+    app = _write(tmp_path, "lib/app.dart", "int view() => 1;\n")
+    run_coverage(tmp_path, [app], None)
+    assert commands == []
+    assert "No test directory" in capsys.readouterr().err
+
+
+def test_dart_coverage_retries_without_branch_coverage_when_nothing_was_written(tmp_path, monkeypatch):
+    commands = []
+    report = tmp_path / "target" / "coverage" / "dart" / "lcov.info"
+
+    def shell(command, cwd):
+        commands.append(command)
+        if "--branch-coverage" in command:
+            return 64
+        report.write_text("SF:lib/app.dart\nDA:1,1\nend_of_record\n", encoding="utf-8")
+        return 0
+
+    monkeypatch.setattr("crapper.runners.run_shell", shell)
+    _write(tmp_path, "pubspec.yaml", _FLUTTER_PUBSPEC)
+    _write(tmp_path, "test/app_test.dart", "void main() {}\n")
+    stale = _write(tmp_path, "coverage/lcov.info", "SF:lib/app.dart\nDA:1,0\nend_of_record\n")
+    app = _write(tmp_path, "lib/app.dart", "int view() => 1;\n")
+    run_coverage(tmp_path, [app], None)
+    assert len(commands) == 2
+    assert "--branch-coverage" in commands[0]
+    assert "--branch-coverage" not in commands[1]
+    assert not stale.exists()
+    assert report.read_text(encoding="utf-8") == "SF:lib/app.dart\nDA:1,1\nend_of_record\n"
+
+
+def test_failed_dart_tests_keep_the_report_that_was_written(tmp_path, monkeypatch, capsys):
+    report = tmp_path / "target" / "coverage" / "dart" / "packages__ui" / "lcov.info"
+
+    def shell(command, cwd):
+        report.write_text("SF:lib/button.dart\nDA:1,1\nend_of_record\n", encoding="utf-8")
+        return 1
+
+    monkeypatch.setattr("crapper.runners.run_shell", shell)
+    _write(tmp_path, "packages/ui/pubspec.yaml", _FLUTTER_PUBSPEC)
+    _write(tmp_path, "packages/ui/test/button_test.dart", "void main() {}\n")
+    button = _write(tmp_path, "packages/ui/lib/button.dart", "int press() => 1;\n")
+    run_coverage(tmp_path, [button], None)
+    assert "Dart tests exited 1" in capsys.readouterr().err
+    assert report.read_text(encoding="utf-8").startswith("SF:packages/ui/lib/button.dart\n")
+
+
+def test_pure_dart_coverage_activates_the_coverage_package(tmp_path, monkeypatch, capsys):
+    commands = []
+    activated = {"done": False}
+
+    def shell(command, cwd):
+        commands.append(command)
+        text = _as_text(command)
+        if text.endswith("--help"):
+            return 0 if activated["done"] else 65
+        if "activate" in text:
+            activated["done"] = True
+            return 0
+        return 0
+
+    monkeypatch.setattr("crapper.runners.run_shell", shell)
+    _write(tmp_path, "pubspec.yaml", _DART_PUBSPEC)
+    _write(tmp_path, "test/app_test.dart", "void main() {}\n")
+    app = _write(tmp_path, "lib/app.dart", "int view() => 1;\n")
+    run_coverage(tmp_path, [app], None)
+    texts = [_as_text(command) for command in commands]
+    assert texts[0].endswith("coverage:test_with_coverage --help")
+    assert texts[1] == "dart pub global activate coverage"
+    assert "test_with_coverage --branch-coverage" in texts[2]
+    monkeypatch.setattr("crapper.runners.run_shell", lambda command, cwd: 1)
+    run_coverage(tmp_path, [app], None)
+    assert "coverage package is unavailable" in capsys.readouterr().err

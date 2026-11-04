@@ -7,6 +7,7 @@ tool, or a failed run, scores its functions at 0%.
 from __future__ import annotations
 
 import json
+import re
 import shlex
 import shutil
 import subprocess
@@ -70,7 +71,7 @@ def _clean_dir(path: Path) -> None:
         shutil.rmtree(path)
 
 
-_COVERAGE_DIRS = {"typescript", "rust", "go", "python"}
+_COVERAGE_DIRS = {"typescript", "rust", "go", "python", "dart"}
 
 
 def _outside_language_dirs(coverage: Path, path: Path) -> bool:
@@ -407,6 +408,115 @@ def rust_coverage_command(kind: str, report: Path) -> list[str]:
     return ["cargo", "tarpaulin", "--out", "Lcov", "--output-dir", str(report.parent)]
 
 
+_FLUTTER_SDK = re.compile(r"(?m)^\s+sdk:\s*flutter\s*$")
+_TEST_WITH_COVERAGE = ["dart", "pub", "global", "run", "coverage:test_with_coverage"]
+
+
+def dart_packages(root: Path, files: list[Path]) -> list[Path]:
+    root = root.resolve()
+    return [
+        package.resolve()
+        for package in _modules_with(files, ".dart", "pubspec.yaml", root)
+    ]
+
+
+def uses_flutter(package: Path) -> bool:
+    pubspec = package / "pubspec.yaml"
+    if not pubspec.is_file():
+        return False
+    text = pubspec.read_text(encoding="utf-8", errors="replace")
+    return _FLUTTER_SDK.search(text) is not None
+
+
+def dart_command(package: Path, report: Path, branches: bool = True) -> list[str]:
+    """Argument vector that writes LCOV to `report`.
+
+    A Flutter package runs `flutter test`; any other package runs the coverage
+    package's `test_with_coverage`, which wraps `dart test`. Both record BRDA
+    branch records, which the loader prefers over line hits.
+    """
+
+    if uses_flutter(package):
+        command = ["flutter", "test", "--coverage"]
+        if branches:
+            command.append("--branch-coverage")
+        command.append(f"--coverage-path={report}")
+        return command
+    command = [*_TEST_WITH_COVERAGE]
+    if branches:
+        command.append("--branch-coverage")
+    command.append(f"--out={report.parent}")
+    return command
+
+
+def _ensure_dart_coverage(package: Path) -> bool:
+    """A pure Dart package needs `coverage` activated globally; a Flutter one does not."""
+
+    if run_shell([*_TEST_WITH_COVERAGE, "--help"], package) == 0:
+        return True
+    _warn(
+        "Activating the coverage package so dart test can write LCOV. "
+        "The project pubspec is left unchanged."
+    )
+    return run_shell(["dart", "pub", "global", "activate", "coverage"], package) == 0
+
+
+def rebase_lcov(report: Path, package: Path, root: Path) -> None:
+    """Prefix each relative SF path with the package's path under the project root.
+
+    Flutter writes `SF:lib/main.dart` relative to the package it ran in, and two
+    packages in one tree both have a `lib/main.dart`. Absolute paths are kept.
+    """
+
+    if not report.is_file():
+        return
+    try:
+        prefix = package.resolve().relative_to(root.resolve()).as_posix()
+    except ValueError:
+        return
+    if prefix in {"", "."}:
+        return
+    lines: list[str] = []
+    for line in report.read_text(encoding="utf-8", errors="replace").splitlines():
+        if line.startswith("SF:") and not Path(line[3:].strip()).is_absolute():
+            line = f"SF:{prefix}/{line[3:].strip()}"
+        lines.append(line)
+    report.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _run_dart_tests(package: Path, report: Path) -> int:
+    code = run_shell(dart_command(package, report), package)
+    if code != 0 and not report.is_file():
+        _warn("No report was written; retrying without --branch-coverage.")
+        code = run_shell(dart_command(package, report, branches=False), package)
+    return code
+
+
+def _cover_dart(root: Path, files: list[Path]) -> None:
+    packages = dart_packages(root, files)
+    if not packages:
+        _warn("No pubspec.yaml; skipping Dart coverage.")
+        return
+    for package in packages:
+        if not (package / "test").is_dir():
+            _warn(f"No test directory in {package}; Dart coverage will score 0%.")
+            continue
+        if not uses_flutter(package) and not _ensure_dart_coverage(package):
+            _warn(f"The coverage package is unavailable in {package}. Dart coverage will score 0%.")
+            continue
+        report = _coverage_report(root, package, "dart")
+        report.parent.mkdir(parents=True, exist_ok=True)
+        report.unlink(missing_ok=True)
+        stale = package / "coverage" / "lcov.info"
+        if stale.is_file():
+            _warn(f"Removing {stale}; the Dart report is regenerated under target/coverage/dart.")
+            stale.unlink()
+        code = _run_dart_tests(package, report)
+        if code != 0:
+            _warn(f"Dart tests exited {code} in {package}. Coverage that was written is still read.")
+        rebase_lcov(report, package, root)
+
+
 def _languages_in(files: list[Path]) -> set[str]:
     found = set()
     for file in files:
@@ -593,4 +703,6 @@ def run_coverage(root: Path, files: list[Path], command: str | None) -> int:
         _cover_python(root, files)
     if "rust" in languages:
         _cover_rust(root, files)
+    if "dart" in languages:
+        _cover_dart(root, files)
     return 0

@@ -21,6 +21,14 @@ def test_language_detection():
     assert language_of("src/app.jsx") == "typescript"
     assert language_of("src/lib.rs") == "rust"
     assert language_of("src/crapper/cli.py") == "python"
+    assert language_of("lib/main.dart") == "dart"
+    assert language_of("lib/model.g.dart") is None
+    assert language_of("lib/model.freezed.dart") is None
+    assert language_of("lib/app.gr.dart") is None
+    assert is_test_file("lib/cart_test.dart") is True
+    assert is_test_file("integration_test/app.dart") is True
+    assert is_test_file("test_driver/main.dart") is True
+    assert is_test_file("lib/cart.dart") is False
     assert language_of("types.d.ts") is None
     assert language_of("notes.md") is None
     assert language_of("app.cts") == "typescript"
@@ -79,6 +87,9 @@ def test_project_snapshot_is_readable_as_crap4clj_edn(tmp_path):
         "src/lib.rs",
         "pub fn open(ok: bool) -> i32 { if ok { 1 } else { 0 } }\n",
     )
+    _write(tmp_path, "lib/cart.dart", "int total(bool ok) => ok ? 1 : 0;\n")
+    _write(tmp_path, "lib/cart.g.dart", "int generated() => 1;\n")
+    _write(tmp_path, "test/cart_test.dart", "void main() { testSkip(); }\n")
     _write(tmp_path, "src/demo/core_test.clj", "(ns demo.core-test)\n(defn should-skip [] 1)\n")
     _write(tmp_path, "board_test.go", "package demo\nfunc TestPlace(t *testing.T) {}\n")
 
@@ -94,6 +105,9 @@ def test_project_snapshot_is_readable_as_crap4clj_edn(tmp_path):
     assert ':namespace "demo"' in text and ':name "open"' in text
     assert "should-skip" not in text
     assert "TestPlace" not in text
+    assert ':namespace "cart"' in text and ':name "total"' in text
+    assert "generated" not in text
+    assert "testSkip" not in text
 
     reader = subprocess.run(
         [

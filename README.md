@@ -1,6 +1,6 @@
 # crapper
 
-CRAP scores for Clojure, Java, Go, TypeScript, Rust, and Python. One run detects the language of each source file, applies that language's complexity and coverage rules, and writes the snapshot [uml-viewer](https://github.com/unclebob/uml-viewer) already reads.
+CRAP scores for Clojure, Java, Go, TypeScript, Rust, Python, and Dart. One run detects the language of each source file, applies that language's complexity and coverage rules, and writes the snapshot [uml-viewer](https://github.com/unclebob/uml-viewer) already reads.
 
 The formula is the one from [crap4clj](https://github.com/unclebob/crap4clj), [crap4java](https://github.com/unclebob/crap4java), and [crap4go](https://github.com/unclebob/crap4go):
 
@@ -52,6 +52,7 @@ uml-viewer groups entries by `:namespace` and joins each operation on `:name`. `
 | TypeScript | the dotted module path, or `module.Class` | the function or method name |
 | Rust | `crate::module`, or `crate::module::Type` | the function or method name |
 | Python | the dotted module path, or `module.Class` | the function or method name |
+| Dart | the package name and the path under `lib/`, dotted (`app.src.cart`), or `app.src.cart.Cart` for a member | the function or method name; `Cart.fromJson` for a named constructor, `total=` for a setter, `operator ==` for an operator |
 
 Rename or move is a new entry. There is no identity matching across runs.
 
@@ -69,6 +70,8 @@ Rust counts `if`, loops, each `match` arm, `?`, and `&&` / `||`. `mod tests` is 
 
 Python counts `if`, `elif`, `for`, `while`, `except`, each `match` case, a comprehension filter, a conditional expression, and each `and` / `or`. Nested functions stay inside the enclosing function. Coverage is LCOV from `coverage.py`, running pytest when the project uses it and `unittest` otherwise. `coverage` and `pytest` are installed into the project's interpreter when they are missing.
 
+Dart counts `if` and a collection `if`, `for`, `for-in`, `await for`, a collection `for`, `while`, `do`, each `on` / `catch` handler, `?:`, each `switch` case and `default`, each switch-expression arm, `&&` / `||`, and the null-aware operators `??`, `??=`, `?.`, `?[]`, and `?..`. Top-level functions, getters, and setters are entries, as are the methods, getters, setters, operators, and bodied constructors of a class, mixin, enum, extension, or extension type. A declaration without a body — abstract, external, or a constructor with only an initializer list, which is most Flutter widget constructors — is not. A local function or closure stays inside the enclosing entry. Generated files (`.g.dart`, `.freezed.dart`, `.gr.dart`, `.config.dart`, `.mocks.dart`, `.pb.dart`, `.pbenum.dart`, `.pbjson.dart`, `.pbserver.dart`, `.gen.dart`) and `.dart_tool/` are skipped, as are `*_test.dart`, `integration_test/`, and `test_driver/`. Coverage is LCOV with branch records, from `flutter test --branch-coverage` when the pubspec depends on the Flutter SDK and from the coverage package's `test_with_coverage` otherwise, run in each package that has a `test/` directory. `coverage` is activated with `dart pub global activate` when it is missing. A nested package's `SF:` paths are prefixed with its path under the project root, so two packages' `lib/main.dart` stay distinct.
+
 ## Coverage commands
 
 By default a run deletes the previous report for each language it is about to measure and regenerates it:
@@ -81,6 +84,7 @@ By default a run deletes the previous report for each language it is about to me
 | TypeScript | `npm run coverage`, or Vitest `--coverage`, or `npx c8 ... npm test` | `coverage/lcov.info` or `target/coverage/typescript/lcov.info` |
 | Rust | `cargo llvm-cov` or `cargo tarpaulin`, per Cargo package | `target/coverage/rust/lcov.info` |
 | Python | `coverage run` with pytest or unittest, then `coverage lcov` | `target/coverage/python/lcov.info` |
+| Dart | `flutter test --coverage --branch-coverage`, or `dart pub global run coverage:test_with_coverage`, per `pubspec.yaml` with a `test/` directory | `target/coverage/dart/lcov.info` |
 
 A missing tool or a failed test run scores that language at 0% and still writes the snapshot. Pass `--coverage-command` to replace those defaults with one command of your own. `--no-coverage` is the run that leaves coverage and CRAP as N/A.
 
